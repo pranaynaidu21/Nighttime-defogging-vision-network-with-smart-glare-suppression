@@ -2,38 +2,83 @@
 
 **Nighttime Image De-Fogging with Smart Glare Suppression using CNN and Transformer Features**
 
-A laptop-friendly research prototype for nighttime/foggy image enhancement. The pipeline combines CNN local features, channel attention, Transformer-style global context, feature fusion, and PSNR/SSIM evaluation.
+A laptop-friendly research prototype for nighttime/foggy road-image enhancement. The model combines CNN local features, channel attention, Transformer global context, skip-connection feature fusion, and PSNR/SSIM evaluation.
 
-## Prototype pipeline
+## ACDC training
 
-Input nighttime/foggy image → CNN local features → attention → Transformer global context → feature fusion → enhanced image.
+The project supports the paired ACDC adverse-condition dataset. Keep the dataset outside this repository.
 
-## Run locally
+Expected local dataset root:
 
-```bash
-python -m venv .venv
-# Windows
+```text
+E:\rgb_anon_trainvaltest\rgb_anon
+├── fog
+│   ├── train
+│   ├── train_ref
+│   ├── val
+│   ├── val_ref
+│   ├── test
+│   └── test_ref
+└── night
+    ├── train
+    ├── train_ref
+    ├── val
+    ├── val_ref
+    ├── test
+    └── test_ref
+```
+
+The loader matches `*_rgb_anon.png` inputs with the corresponding `*_rgb_ref_anon.png` normal-condition images. Training uses fog + night pairs. Synthetic brightness reduction, noise, and headlight/street-light glare are applied only as training augmentation.
+
+## Install
+
+```powershell
 .venv\Scripts\activate
-# macOS/Linux
-source .venv/bin/activate
-
 pip install -r requirements.txt
-python train.py --epochs 3
+```
+
+## Train the ACDC prototype
+
+Quick smoke test with a small subset:
+
+```powershell
+python train_acdc.py --data "E:\rgb_anon_trainvaltest\rgb_anon" --epochs 1 --limit 20 --batch 2 --size 128
+```
+
+Full laptop prototype training:
+
+```powershell
+python train_acdc.py --data "E:\rgb_anon_trainvaltest\rgb_anon" --epochs 5 --batch 2 --size 128
+```
+
+The best checkpoint is written to:
+
+```text
+checkpoints/acdc_best.pth
+```
+
+The script reports training/validation loss, PSNR, and SSIM after each epoch.
+
+## Run the Streamlit demo
+
+After training:
+
+```powershell
 streamlit run app.py
 ```
 
-Command-line inference:
+Upload a foggy or nighttime road image to compare the input and enhanced output.
 
-```bash
-python inference.py --input data/sample_night_foggy.png --output outputs/enhanced.png
+## Command-line inference
+
+```powershell
+python inference.py --input "path\to\image.png" --output "outputs\enhanced.png"
 ```
 
-## Dataset
+## Dataset policy
 
-The repository deliberately does not commit third-party datasets. `DATASET.md` describes how to use a paired nighttime dehazing dataset and how to train with `train_real.py`.
-
-The default training script generates small synthetic nighttime degradation pairs so the prototype can run on a CPU laptop without a large download.
+Third-party datasets are intentionally not committed to GitHub. Keep ACDC on the local machine and use its own license/terms. Only source code, documentation, and small project assets belong in this repository.
 
 ## Research note
 
-This is a proof-of-concept implementation inspired by the project methodology. It is not a claim that the prototype reproduces a published architecture exactly. Report real-dataset PSNR/SSIM separately from synthetic prototype results.
+This is a proof-of-concept implementation, not a claim that it reproduces a published architecture exactly. Report real ACDC test metrics separately from synthetic augmentation results.
