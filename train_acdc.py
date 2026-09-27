@@ -29,14 +29,18 @@ def psnr(x, y):
     mse = F.mse_loss(x, y).item()
     if mse <= 1e-12:
         return 99.0
-    return 10.0 * torch.log10(torch.tensor(1.0 / mse)).item()
+    return 10.0 * torch.log10(torch.tensor(1.0 / mse, device=x.device)).item()
 
 
 def run_epoch(model, loader, optimizer, scaler, device, train=True):
     model.train(train)
     total_loss = total_psnr = total_ssim = n = 0
     for x, y, _, _ in loader:
-        x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
+        # ACDC images should already be float32, but explicitly enforce the
+        # model input/target dtype so a local PyTorch/OpenCV configuration
+        # cannot accidentally produce float64 tensors for float32 Conv2d.
+        x = x.to(device=device, dtype=torch.float32, non_blocking=True)
+        y = y.to(device=device, dtype=torch.float32, non_blocking=True)
         if train:
             optimizer.zero_grad(set_to_none=True)
         with torch.amp.autocast(device_type=device.type, enabled=device.type == "cuda"):
@@ -95,7 +99,7 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=args.batch, shuffle=False,
                             num_workers=args.workers, pin_memory=device.type == "cuda")
 
-    model = NightDehazeNet(base=24).to(device)
+    model = NightDehazeNet(base=24).to(device).float()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
 
