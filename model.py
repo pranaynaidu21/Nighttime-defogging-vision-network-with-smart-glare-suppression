@@ -19,7 +19,7 @@ class ChannelAttention(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    """Global context at 1/8 spatial resolution so laptop training stays practical."""
+    """Global context at 1/8 spatial resolution."""
 
     def __init__(self, d, heads=4):
         super().__init__()
@@ -83,5 +83,8 @@ class NightDehazeNet(nn.Module):
         y = self.f3(torch.cat([self.u3(z), e3], dim=1))
         y = self.f2(torch.cat([self.u2(y), e2], dim=1))
         y = self.f1(torch.cat([self.u1(y), e1], dim=1))
-        residual = 0.5 * torch.tanh(self.out(y))
+
+        # Conservative residual: the network learns a correction rather than
+        # replacing the input, reducing the chance of destroying clear areas.
+        residual = 0.20 * torch.tanh(self.out(y))
         return torch.clamp(x + residual, 0, 1)
