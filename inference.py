@@ -27,14 +27,12 @@ def enhance_tiled(model, rgb, device, tile=256, overlap=64):
     acc = np.zeros((ph, pw, 3), dtype=np.float32)
     weight = np.zeros((ph, pw, 1), dtype=np.float32)
 
-    # Smooth center weighting reduces seams between overlapping tiles.
     yy, xx = np.mgrid[0:tile, 0:tile]
     cy = (tile - 1) / 2.0
     cx = (tile - 1) / 2.0
     sigma = max(1.0, tile * 0.30)
     win = np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * sigma * sigma)).astype(np.float32)
-    win = 0.25 + 0.75 * win
-    win = win[..., None]
+    win = (0.25 + 0.75 * win)[..., None]
 
     with torch.no_grad():
         for top in range(0, max(1, ph - tile + 1), step):
@@ -49,8 +47,7 @@ def enhance_tiled(model, rgb, device, tile=256, overlap=64):
                 acc[top:top + tile, left:left + tile] += out * win
                 weight[top:top + tile, left:left + tile] += win
 
-    out = acc / np.maximum(weight, 1e-6)
-    return np.clip(out[:h, :w], 0, 1)
+    return np.clip(acc / np.maximum(weight, 1e-6), 0, 1)[:h, :w]
 
 
 def laplacian_sharpness(rgb01):
@@ -63,9 +60,6 @@ def safe_quality_guard(original, restored):
     orig_sharp = laplacian_sharpness(original)
     out_sharp = laplacian_sharpness(restored)
     change = float(np.mean(np.abs(restored - original)))
-
-    # If the network becomes dramatically softer or changes too much, blend
-    # toward the original instead of returning a visibly damaged image.
     if out_sharp < orig_sharp * 0.55 or change > 0.20:
         restored = 0.65 * original + 0.35 * restored
         guarded = True
@@ -74,29 +68,34 @@ def safe_quality_guard(original, restored):
     return np.clip(restored, 0, 1), orig_sharp, out_sharp, change, guarded
 
 
-p = argparse.ArgumentParser()
-p.add_argument('--input', required=True)
-p.add_argument('--output', default='outputs/enhanced.png')
-p.add_argument('--checkpoint', default='checkpoints/acdc_v2_best.pth')
-p.add_argument('--tile', type=int, default=256)
-p.add_argument('--overlap', type=int, default=64)
-a = p.parse_args()
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument('--input', required=True)
+    p.add_argument('--output', default='outputs/enhanced.png')
+    p.add_argument('--checkpoint', default='checkpoints/acdc_v2_best.pth')
+    p.add_argument('--tile', type=int, default=256)
+    p.add_argument('--overlap', type=int, default=64)
+    a = p.parse_args()
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model, trained_size = load_model(a.checkpoint, device)
-tile = a.tile or trained_size
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model, trained_size = load_model(a.checkpoint, device)
+    tile = a.tile or trained_size
+    img = cv2.imread(a.input)
+    if img is None:
+        raise FileNotFoundError(a.input)
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    restored = enhance_tiled(model, rgb, device, tile=tile, overlap=a.overlap)
+    restored, orig_sharp, out_sharp, change, guarded = safe_quality_guard(
+        rgb.astype(np.float32) / 255.0, restored
+    )
+    os.makedirs(os.path.dirname(a.output) or '.', exist_ok=True)
+    cv2.imwrite(a.output, cv2.cvtColor((restored * 255).astype(np.uint8), cv2.COLOR_RGB2BGR))
+    print(f'output={a.output}')
+    print(f'original_sharpness={orig_sharp:.2f}')
+    print(f'model_sharpness={out_sharp:.2f}')
+    print(f'mean_change={change:.4f}')
+    print(f'quality_guard={guarded}')
 
-img = cv2.imread(a.input)
-if img is None:
-    raise FileNotFoundError(a.input)
-rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-restored = enhance_tiled(model, rgb, device, tile=tile, overlap=a.overlap)
-restored, orig_sharp, out_sharp, change, guarded = safe_quality_guard(rgb.astype(np.float32) / 255.0, restored)
 
-os.makedirs(os.path.dirname(a.output) or '.', exist_ok=True)
-cv2.imwrite(a.output, cv2.cvtColor((restored * 255).astype(np.uint8), cv2.COLOR_RGB2BGR))
-print(f'output={a.output}')
-print(f'original_sharpness={orig_sharp:.2f}')
-print(f'model_sharpness={out_sharp:.2f}')
-print(f'mean_change={change:.4f}')
-print(f'quality_guard={guarded}')
+if __name__ == '__main__':
+    main()
