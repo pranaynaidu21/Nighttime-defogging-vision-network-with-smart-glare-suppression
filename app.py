@@ -23,7 +23,37 @@ def load_model():
     model.eval()
     return model, device
 
-file = st.file_uploader('Upload a nighttime / foggy road image', type=['jpg', 'jpeg', 'png'])
+
+def enhance_postprocess(rgb, strength=0.65):
+    """Lightweight laptop-friendly enhancement after the neural network.
+
+    Uses LAB local contrast enhancement plus mild detail sharpening. The
+    original/model result is blended with the enhancement so it is less
+    likely to introduce aggressive artifacts.
+    """
+    img8 = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
+
+    # Local contrast enhancement on luminance only.
+    lab = cv2.cvtColor(img8, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l_enhanced = clahe.apply(l)
+    contrast = cv2.cvtColor(cv2.merge((l_enhanced, a, b)), cv2.COLOR_LAB2RGB)
+
+    # Mild unsharp mask for road/vehicle/edge details.
+    blurred = cv2.GaussianBlur(contrast, (0, 0), 1.2)
+    sharpened = cv2.addWeighted(contrast, 1.20, blurred, -0.20, 0)
+
+    # Blend rather than replacing the neural output completely.
+    alpha = float(np.clip(strength, 0.0, 1.0))
+    enhanced = cv2.addWeighted(img8, 1.0 - alpha, sharpened, alpha, 0)
+    return np.clip(enhanced.astype(np.float32) / 255.0, 0, 1)
+
+
+file = st.file_uploader(
+    'Upload a nighttime / foggy road image',
+    type=['jpg', 'jpeg', 'png']
+)
 model, device = load_model()
 
 if model is None:
@@ -32,13 +62,46 @@ elif file:
     img = np.array(Image.open(file).convert('RGB'))
     h, w = img.shape[:2]
     size = 128
+
     x = cv2.resize(img, (size, size), interpolation=cv2.INTER_AREA).astype('float32') / 255.0
     tensor = torch.from_numpy(x.transpose(2, 0, 1))[None].to(device)
+
     with torch.no_grad():
-        out = model(tensor)[0].cpu().numpy().transpose(1, 2, 0)
-    out = np.clip(cv2.resize(out, (w, h), interpolation=cv2.INTER_CUBIC), 0, 1)
-    left, right = st.columns(2)
-    left.image(img, caption='Input', use_container_width=True)
-    right.image(out, caption='Enhanced', use_container_width=True)
-    png = cv2.imencode('.png', (out * 255).astype('uint8'))[1].tobytes()
-    st.download_button('Download enhanced image', png, 'enhanced.png', 'image/png')
+        model_out = model(tensor)[0].cpu().numpy().transpose(1, 2, 0)
+
+    # Restore the original image resolution.
+    model_out = np.clip(
+        cv2.resize(model_out, (w, h), interpolation=cv2.INTER_CUBIC),
+        0,
+        1,
+    )
+
+    st.subheader('Post-processing image enhancer')
+    strength = st.slider(
+        'Enhancement strength',
+        min_value=0.0,
+        max_value=1.0,
+        value=0.65,
+        step=0.05,
+        help='Higher values add more local contrast and detail sharpening.'
+    )
+    enhanced = enhance_postprocess(model_out, strength)
+
+    # Three-stage visual check: original -> neural model -> enhancer.
+    col1, col2, col3 = st.columns(3)
+    col1.image(img, caption='1. Original Input', use_container_width=True)
+    col2.image(model_out, caption='2. Neural Model Output', use_container_width=True)
+    col3.image(enhanced, caption='3. Final Enhanced Output', use_container_width=True)
+
+    st.info(
+        'The final image is a post-processed version of the neural model output. '
+        'Use the slider to compare a softer or stronger enhancement.'
+    )
+
+    png = cv2.imencode('.png', (enhanced * 255).astype('uint8'))[1].tobytes()
+    st.download_button(
+        'Download final enhanced image',
+        png,
+        'enhanced.png',
+        'image/png'
+    )
