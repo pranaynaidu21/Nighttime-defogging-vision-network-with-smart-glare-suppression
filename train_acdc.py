@@ -11,6 +11,9 @@ from acdc_dataset import ACDCPairedDataset
 from model import NightDehazeNet
 
 
+CONDITIONS = ("fog", "night", "rain", "snow")
+
+
 def ssim_loss(x, y, window=7):
     pad = window // 2
     mu_x = F.avg_pool2d(x, window, 1, pad)
@@ -25,6 +28,19 @@ def ssim_loss(x, y, window=7):
     return 1.0 - score.clamp(0, 1).mean()
 
 
+def edge_loss(x, y):
+    """Sobel-gradient loss to discourage blurry road/vehicle edges."""
+    gray_x = 0.299 * x[:, 0:1] + 0.587 * x[:, 1:2] + 0.114 * x[:, 2:3]
+    gray_y = 0.299 * y[:, 0:1] + 0.587 * y[:, 1:2] + 0.114 * y[:, 2:3]
+    kx = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], device=x.device, dtype=x.dtype).view(1, 1, 3, 3)
+    ky = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], device=x.device, dtype=x.dtype).view(1, 1, 3, 3)
+    gx = F.conv2d(gray_x, kx, padding=1)
+    gy = F.conv2d(gray_x, ky, padding=1)
+    gx_t = F.conv2d(gray_y, kx, padding=1)
+    gy_t = F.conv2d(gray_y, ky, padding=1)
+    return F.l1_loss(gx, gx_t) + F.l1_loss(gy, gy_t)
+
+
 def psnr(x, y):
     mse = F.mse_loss(x, y).item()
     if mse <= 1e-12:
@@ -36,9 +52,6 @@ def run_epoch(model, loader, optimizer, scaler, device, train=True):
     model.train(train)
     total_loss = total_psnr = total_ssim = n = 0
     for x, y, _, _ in loader:
-        # ACDC images should already be float32, but explicitly enforce the
-        # model input/target dtype so a local PyTorch/OpenCV configuration
-        # cannot accidentally produce float64 tensors for float32 Conv2d.
         x = x.to(device=device, dtype=torch.float32, non_blocking=True)
         y = y.to(device=device, dtype=torch.float32, non_blocking=True)
         if train:
@@ -47,7 +60,8 @@ def run_epoch(model, loader, optimizer, scaler, device, train=True):
             out = model(x)
             l1 = F.l1_loss(out, y)
             sl = ssim_loss(out, y)
-            loss = l1 + 0.20 * sl
+            el = edge_loss(out, y)
+            loss = l1 + 0.20 * sl + 0.05 * el
         if train:
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
@@ -65,15 +79,15 @@ def run_epoch(model, loader, optimizer, scaler, device, train=True):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Train NightVision-Dehaze on paired ACDC fog/night images")
+    p = argparse.ArgumentParser(description="Train NightVision-Dehaze v2 on paired ACDC conditions")
     p.add_argument("--data", default=r"E:\rgb_anon_trainvaltest\rgb_anon")
     p.add_argument("--epochs", type=int, default=5)
     p.add_argument("--batch", type=int, default=2)
-    p.add_argument("--size", type=int, default=128)
+    p.add_argument("--size", type=int, default=256)
     p.add_argument("--lr", type=float, default=2e-4)
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--limit", type=int, default=0, help="0 = use all training pairs")
-    p.add_argument("--out", default="checkpoints/acdc_best.pth")
+    p.add_argument("--out", default="checkpoints/acdc_v2_best.pth")
     args = p.parse_args()
 
     if args.size % 8 != 0:
@@ -86,13 +100,15 @@ def main():
     if device.type == "cuda":
         print(f"GPU: {torch.cuda.get_device_name(0)}")
 
-    train_ds = ACDCPairedDataset(args.data, "train", ("fog", "night"), args.size, True, True)
-    val_ds = ACDCPairedDataset(args.data, "val", ("fog", "night"), args.size, False, False)
+    train_ds = ACDCPairedDataset(args.data, "train", CONDITIONS, args.size, True, True)
+    val_ds = ACDCPairedDataset(args.data, "val", CONDITIONS, args.size, False, False)
     if args.limit and args.limit < len(train_ds):
         train_ds = Subset(train_ds, list(range(args.limit)))
 
+    print(f"Conditions: {', '.join(CONDITIONS)}")
     print(f"Training pairs: {len(train_ds)}")
     print(f"Validation pairs: {len(val_ds)}")
+    print(f"Patch size: {args.size}x{args.size}")
 
     train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
                               num_workers=args.workers, pin_memory=device.type == "cuda")
@@ -122,7 +138,8 @@ def main():
                 "model": model.state_dict(),
                 "base": 24,
                 "size": args.size,
-                "dataset": "ACDC fog + night paired restoration",
+                "dataset": "ACDC fog + night + rain + snow paired restoration",
+                "version": "v2-patch-edge-loss",
                 "epoch": epoch,
                 "val_loss": val_loss,
                 "val_psnr": val_psnr,
