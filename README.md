@@ -1,4 +1,4 @@
-# NightVision-Dehaze v2
+# Nighttime defogging vision network with smart glare suppression
 
 **Nighttime and adverse-weather road-image restoration with CNN, channel attention and Transformer features**
 
